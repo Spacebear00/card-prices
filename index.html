@@ -40,12 +40,31 @@ input:focus{outline:none;border-color:#45c8b8}
 .pr .big{font-size:25px;font-family:ui-monospace,Menlo,monospace;color:#d9b45b;margin-top:2px}
 .pr .alt{font-size:11.5px;color:#55677a;font-family:ui-monospace,Menlo,monospace}
 .pr .none{font-size:15px;color:#55677a}
-.recent{margin-top:22px}
-.recent .cap{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#55677a;margin-bottom:6px}
-.rrow{display:flex;gap:8px;align-items:baseline;padding:8px 2px;border-bottom:1px solid #161d27;
-  cursor:pointer;font-size:14px}
-.rrow .no{font-family:ui-monospace,Menlo,monospace;color:#55677a;min-width:84px}
-.rrow .val{margin-left:auto;font-family:ui-monospace,Menlo,monospace;color:#d9b45b}
+/* Keeping a card: one button on the result, and the list it goes into. */
+.keep{display:block;width:100%;border:0;border-top:1px solid #1b2430;background:#121a24;
+  color:#45c8b8;font:inherit;font-size:15px;padding:14px;cursor:pointer;min-height:50px}
+.keep:hover{background:#16202c}
+.keep.in{color:#cd7266}
+.recent{margin-top:24px}
+.rhead{display:flex;align-items:baseline;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.rhead .cap{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#55677a}
+.rhead .tot{font-family:ui-monospace,Menlo,monospace;color:#d9b45b;font-size:15px}
+.rhead select{height:38px;border-radius:9px;border:1px solid #2a3646;background:#0f141c;
+  color:#e6ecf2;padding:0 8px;font-size:14px;margin-left:auto}
+.rrow{display:flex;gap:10px;align-items:center;padding:10px 2px;border-bottom:1px solid #161d27;
+  font-size:14px}
+.rrow .who{flex:1;min-width:0;cursor:pointer}
+.rrow .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rrow .no{font-family:ui-monospace,Menlo,monospace;color:#55677a;font-size:12px}
+.rrow .val{font-family:ui-monospace,Menlo,monospace;color:#d9b45b;flex:none}
+/* A thumb-sized target, because the list is read standing up. */
+.rrow .drop{flex:none;width:44px;height:44px;border:0;background:none;color:#55677a;
+  font-size:18px;cursor:pointer;border-radius:8px}
+.rrow .drop:hover{color:#cd7266;background:#161d27}
+.rfoot{display:flex;gap:8px;margin-top:10px}
+.rfoot button{border:1px solid #2a3646;background:#0f141c;color:#8496a8;border-radius:9px;
+  padding:10px 14px;font:inherit;font-size:13px;cursor:pointer;min-height:42px}
+.rfoot button:hover{color:#e6ecf2}
 footer{color:#3e4c5a;font-size:11.5px;margin-top:26px;text-align:center}
 </style></head>
 <body><div class="wrap">
@@ -70,8 +89,22 @@ footer{color:#3e4c5a;font-size:11.5px;margin-top:26px;text-align:center}
 <div id="out"></div>
 
 <div class="recent" id="recentBox" hidden>
-  <div class="cap">Looked up</div>
+  <div class="rhead">
+    <span class="cap">Kept</span>
+    <span class="tot" id="keptTotal"></span>
+    <select id="keptSort" aria-label="Order the kept list">
+      <option value="added">Order added</option>
+      <option value="name">Name</option>
+      <option value="set">Set, then number</option>
+      <option value="high">Most valuable first</option>
+      <option value="low">Least valuable first</option>
+    </select>
+  </div>
   <div id="recent"></div>
+  <div class="rfoot">
+    <button type="button" id="keptCopy">Copy as a list</button>
+    <button type="button" id="keptClear">Clear</button>
+  </div>
 </div>
 
 <footer id="foot"></footer>
@@ -252,37 +285,137 @@ function show(row) {
     prices.appendChild(box);
   }
   card.appendChild(prices);
+
+  var keepBtn = document.createElement('button');
+  keepBtn.id = 'keepBtn';
+  keepBtn.type = 'button';
+  keepBtn.dataset.no = row[0];
+  keepBtn.onclick = function () { keep(SET.code, row); markKeep(); };
+  card.appendChild(keepBtn);
+
   out.appendChild(card);
+  markKeep();
 }
 
-function remember(code, row) {
-  var pair = row[5] || {};
-  var first = Object.keys(pair)[0];
-  var value = first ? (money(pair[first][0]) || money(pair[first][1])) : null;
-  recent.unshift({ code: code, no: row[0], name: row[1], value: value });
-  recent = recent.slice(0, 12);
+/**
+ * The kept list.
+ *
+ * Added on purpose rather than by looking something up, because the list is a pile being
+ * worked through and a card you checked and put back does not belong in it. It survives
+ * the browser closing, which a list built up over an evening at a table has to.
+ */
+function loadKept() {
+  try {
+    var saved = JSON.parse(localStorage.getItem('grimoire.lookup.kept') || '[]');
+    if (Object.prototype.toString.call(saved) === '[object Array]') recent = saved;
+  } catch (e) { /* a browser with no storage still keeps the list for this visit */ }
+}
+function saveKept() {
+  try { localStorage.setItem('grimoire.lookup.kept', JSON.stringify(recent)); } catch (e) {}
+}
+
+/** What one copy is worth: the first finish with a price, low before market. */
+function worth(entry) {
+  var pair = entry.prices || {};
+  var keys = Object.keys(pair);
+  for (var i = 0; i < keys.length; i++) {
+    var p = pair[keys[i]];
+    if (p[0] !== null && p[0] !== undefined) return p[0];
+    if (p[1] !== null && p[1] !== undefined) return p[1];
+  }
+  return null;
+}
+
+function heldAt(code, no) {
+  for (var i = 0; i < recent.length; i++) {
+    if (recent[i].code === code && String(recent[i].no) === String(no)) return i;
+  }
+  return -1;
+}
+
+function keep(code, row) {
+  var at = heldAt(code, row[0]);
+  if (at >= 0) recent.splice(at, 1);
+  else recent.push({ code: code, no: row[0], name: row[1], prices: row[5] || {} });
+  saveKept();
+  paintKept();
+  return at < 0;
+}
+
+var SORTS = {
+  added: null,
+  name: function (a, b) { return a.name.localeCompare(b.name); },
+  set: function (a, b) {
+    return a.code.localeCompare(b.code)
+      || String(a.no).localeCompare(String(b.no), undefined, { numeric: true });
+  },
+  high: function (a, b) { return (worth(b) || 0) - (worth(a) || 0); },
+  low: function (a, b) { return (worth(a) || 0) - (worth(b) || 0); },
+};
+
+function paintKept() {
   var box = document.getElementById('recent');
   box.textContent = '';
+  var how = document.getElementById('keptSort').value;
+  // 'Order added' is the list as it stands; the others never reorder what is stored.
+  var list = SORTS[how] ? recent.slice().sort(SORTS[how]) : recent.slice();
+
+  var total = 0, priced = 0;
   for (var i = 0; i < recent.length; i++) {
-    (function (r) {
+    var w = worth(recent[i]);
+    if (w !== null) { total += w; priced++; }
+  }
+  document.getElementById('keptTotal').textContent = recent.length
+    ? recent.length + (recent.length === 1 ? ' card · ' : ' cards · ') + money(total)
+      + (priced < recent.length ? ' (' + (recent.length - priced) + ' with no price)' : '')
+    : '';
+
+  for (var k = 0; k < list.length; k++) {
+    (function (entry) {
       var line = document.createElement('div');
       line.className = 'rrow';
-      var no = document.createElement('span');
+
+      var who = document.createElement('div');
+      who.className = 'who';
+      var nm = document.createElement('div');
+      nm.className = 'nm';
+      nm.textContent = entry.name;
+      var no = document.createElement('div');
       no.className = 'no';
-      no.textContent = r.code + ' ' + r.no;
-      var nm = document.createElement('span');
-      nm.textContent = r.name;
+      no.textContent = entry.code + ' ' + entry.no;
+      who.appendChild(nm); who.appendChild(no);
+      // Tapping the card itself looks it up again, which is how you check one twice.
+      who.onclick = function () { setbox.value = entry.code; nobox.value = entry.no; look(); };
+
       var val = document.createElement('span');
       val.className = 'val';
-      val.textContent = r.value || '—';
-      line.appendChild(no); line.appendChild(nm); line.appendChild(val);
-      line.onclick = function () {
-        setbox.value = r.code; nobox.value = r.no; look();
+      var w = worth(entry);
+      val.textContent = w === null ? '—' : money(w);
+
+      var drop = document.createElement('button');
+      drop.className = 'drop';
+      drop.type = 'button';
+      drop.title = 'Take ' + entry.name + ' off the list';
+      drop.textContent = '\u00d7';
+      drop.onclick = function () {
+        var at = heldAt(entry.code, entry.no);
+        if (at >= 0) { recent.splice(at, 1); saveKept(); paintKept(); markKeep(); }
       };
+
+      line.appendChild(who); line.appendChild(val); line.appendChild(drop);
       box.appendChild(line);
-    })(recent[i]);
+    })(list[k]);
   }
   document.getElementById('recentBox').hidden = recent.length === 0;
+}
+
+/** The button on the open card says whether that card is already on the list. */
+function markKeep() {
+  var button = document.getElementById('keepBtn');
+  if (!button || !SET) return;
+  var on = heldAt(SET.code, button.dataset.no) >= 0;
+  button.textContent = on ? '\u2212  Take off the list' : '+  Keep for review';
+  button.className = 'keep' + (on ? ' in' : '');
 }
 
 function look() {
@@ -298,7 +431,6 @@ function look() {
     }
     say('');
     show(row);
-    remember(set.code, row);
   });
 }
 
@@ -307,6 +439,35 @@ setbox.addEventListener('change', function () { pick(setbox.value).then(function
 setbox.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); nobox.focus(); } });
 nobox.addEventListener('input', look);
 nobox.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); nobox.blur(); } });
+
+document.getElementById('keptSort').onchange = paintKept;
+document.getElementById('keptClear').onclick = function () {
+  if (!recent.length) return;
+  if (!confirm('Take all ' + recent.length + ' off the list?')) return;
+  recent = [];
+  saveKept();
+  paintKept();
+  markKeep();
+};
+/* Out of the phone and into a message or a spreadsheet, in the same shape the rest of
+   Grimoire reads: a count, a name, and the set and number in brackets. */
+document.getElementById('keptCopy').onclick = function () {
+  var how = document.getElementById('keptSort').value;
+  var list = SORTS[how] ? recent.slice().sort(SORTS[how]) : recent.slice();
+  var text = list.map(function (e) {
+    var w = worth(e);
+    return '1 ' + e.name + ' (' + e.code + ') ' + e.no + (w === null ? '' : '  ' + money(w));
+  }).join('\n');
+  var done = document.getElementById('keptCopy');
+  function said(what) { done.textContent = what; setTimeout(function () { done.textContent = 'Copy as a list'; }, 1600); }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function () { said('Copied'); },
+                                             function () { said('Could not copy'); });
+  } else { said('Could not copy'); }
+};
+
+loadKept();
+paintKept();
 
 loadIndex().then(function () {
   // Straight back to where you were: a venue is one set at a time.
