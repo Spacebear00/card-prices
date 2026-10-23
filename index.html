@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'">
+<title>Card prices — MTG</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#0b0e13;color:#e6ecf2;font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+.wrap{max-width:720px;margin:0 auto;padding:14px 14px 48px}
+h1{margin:0 0 2px;font-size:19px}
+.sub{font-size:12.5px;color:#55677a;margin-bottom:14px}
+/* Two boxes, both big enough to hit with a thumb while holding a card in the other hand. */
+.ask{display:flex;gap:8px}
+.ask label{flex:1;display:flex;flex-direction:column;gap:4px}
+.ask .cap{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#55677a}
+input{height:52px;border-radius:10px;border:1px solid #2a3646;background:#0f141c;color:#e6ecf2;
+  padding:0 12px;font-size:18px;font-family:ui-monospace,Menlo,monospace;width:100%}
+input:focus{outline:none;border-color:#45c8b8}
+#setbox{text-transform:uppercase}
+.hits{margin-top:6px;display:flex;gap:6px;flex-wrap:wrap}
+.hit{border:1px solid #2a3646;background:#0f141c;color:#8496a8;border-radius:999px;
+  padding:7px 12px;font-size:13px;cursor:pointer;min-height:36px}
+.hit b{color:#e6ecf2;font-weight:600}
+.hit:hover{border-color:#45c8b8}
+.state{margin-top:16px;color:#8496a8;font-size:14px}
+.card{margin-top:16px;background:#0f141c;border:1px solid #1b2430;border-radius:14px;overflow:hidden}
+.card .top{display:flex;gap:12px;padding:12px}
+.card img{width:104px;flex:none;border-radius:8px;background:#11161f}
+.card .who{flex:1;min-width:0}
+.card .nm{font-size:17px;line-height:1.2}
+.card .meta{font-size:12.5px;color:#8496a8;margin-top:4px;display:flex;gap:6px;flex-wrap:wrap}
+.tag{border:1px solid #2a3646;border-radius:5px;padding:0 5px}
+.prices{border-top:1px solid #1b2430;display:flex;flex-wrap:wrap}
+.pr{flex:1 1 140px;padding:11px 12px;border-right:1px solid #1b2430}
+.pr:last-child{border-right:0}
+.pr .fin{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#55677a}
+/* The number is the whole point, so it is the biggest thing on the screen. */
+.pr .big{font-size:25px;font-family:ui-monospace,Menlo,monospace;color:#d9b45b;margin-top:2px}
+.pr .alt{font-size:11.5px;color:#55677a;font-family:ui-monospace,Menlo,monospace}
+.pr .none{font-size:15px;color:#55677a}
+.recent{margin-top:22px}
+.recent .cap{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#55677a;margin-bottom:6px}
+.rrow{display:flex;gap:8px;align-items:baseline;padding:8px 2px;border-bottom:1px solid #161d27;
+  cursor:pointer;font-size:14px}
+.rrow .no{font-family:ui-monospace,Menlo,monospace;color:#55677a;min-width:84px}
+.rrow .val{margin-left:auto;font-family:ui-monospace,Menlo,monospace;color:#d9b45b}
+footer{color:#3e4c5a;font-size:11.5px;margin-top:26px;text-align:center}
+</style></head>
+<body><div class="wrap">
+<h1>Card prices — MTG</h1>
+<div class="sub" id="sub">Type a set code and the collector number off the card.</div>
+
+<div class="ask">
+  <label style="flex:0 0 40%">
+    <span class="cap">Set</span>
+    <input id="setbox" type="text" inputmode="text" autocomplete="off" autocapitalize="characters"
+           spellcheck="false" placeholder="MH2" enterkeyhint="next">
+  </label>
+  <label>
+    <span class="cap">Number</span>
+    <input id="nobox" type="text" inputmode="numeric" autocomplete="off" spellcheck="false"
+           placeholder="138" enterkeyhint="search">
+  </label>
+</div>
+<div class="hits" id="hits"></div>
+
+<div class="state" id="state"></div>
+<div id="out"></div>
+
+<div class="recent" id="recentBox" hidden>
+  <div class="cap">Looked up</div>
+  <div id="recent"></div>
+</div>
+
+<footer id="foot"></footer>
+</div>
+<script>
+var BASE = "p";
+var INDEX = null;       // every set, loaded once
+var SET = null;         // the set currently in hand
+var recent = [];
+
+var setbox = document.getElementById('setbox');
+var nobox = document.getElementById('nobox');
+var hits = document.getElementById('hits');
+var state = document.getElementById('state');
+var out = document.getElementById('out');
+
+function money(cents) {
+  if (cents === null || cents === undefined) return null;
+  return '$' + (cents / 100).toFixed(2);
+}
+function say(text) { state.textContent = text || ''; }
+
+/* The index is small and everything depends on it, so it is fetched once up front and
+   the boxes stay disabled for the moment that takes rather than silently matching
+   nothing. */
+function loadIndex() {
+  say('Loading the set list…');
+  return fetch(BASE + '/sets.json').then(function (r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }).then(function (data) {
+    INDEX = data.sets.map(function (row) {
+      return { code: row[0], name: row[1], game: row[2], released: row[3],
+               cards: row[4], slug: row[5] };
+    });
+    document.getElementById('foot').textContent =
+      INDEX.length + ' sets · prices as of ' + String(data.built).slice(0, 10);
+    say('');
+  }).catch(function (error) {
+    say('Could not load the set list (' + error.message + '). Reload the page.');
+  });
+}
+
+/** Sets matching what has been typed: code first, then name. */
+function matches(typed) {
+  var want = typed.trim().toLowerCase();
+  if (!want || !INDEX) return [];
+  var byCode = [], byName = [];
+  for (var i = 0; i < INDEX.length; i++) {
+    var s = INDEX[i];
+    var code = s.code.toLowerCase();
+    if (code === want) return [s];
+    if (code.indexOf(want) === 0) byCode.push(s);
+    else if (s.name.toLowerCase().indexOf(want) >= 0) byName.push(s);
+  }
+  return byCode.concat(byName).slice(0, 6);
+}
+
+function paintHits() {
+  hits.textContent = '';
+  if (SET && SET.code.toLowerCase() === setbox.value.trim().toLowerCase()) return;
+  var found = matches(setbox.value);
+  for (var i = 0; i < found.length; i++) {
+    (function (s) {
+      var b = document.createElement('button');
+      b.className = 'hit';
+      b.type = 'button';
+      b.innerHTML = '<b>' + s.code + '</b> ' + s.name.replace(/[<>&]/g, '');
+      b.onclick = function () { setbox.value = s.code; paintHits(); pick(s.code); nobox.focus(); };
+      hits.appendChild(b);
+    })(found[i]);
+  }
+}
+
+/** Fetch one set's prices. Cached by the browser, so asking twice costs nothing. */
+function pick(code) {
+  var want = String(code).trim().toUpperCase();
+  if (!want) return Promise.resolve(null);
+  if (SET && SET.code.toUpperCase() === want) return Promise.resolve(SET);
+  /* By SLUG, from the index — a set code can carry a colon or an ampersand, which is not
+     a file name, so the writer slugged it and the index carries what it chose. */
+  var known = null;
+  for (var i = 0; INDEX && i < INDEX.length; i++) {
+    if (INDEX[i].code.toUpperCase() === want) { known = INDEX[i]; break; }
+  }
+  if (!known) { SET = null; say('No set called ' + want + '.'); return Promise.resolve(null); }
+  say('Reading ' + known.code + '…');
+  return fetch(BASE + '/' + encodeURIComponent(known.slug) + '.json').then(function (r) {
+    if (!r.ok) throw new Error(r.status === 404 ? 'no prices for ' + want : 'HTTP ' + r.status);
+    return r.json();
+  }).then(function (data) {
+    SET = { code: data.code, name: data.name, by: {} };
+    for (var i = 0; i < data.cards.length; i++) {
+      var row = data.cards[i];
+      // Indexed by the number as printed AND without leading zeros, because '004' and
+      // '4' are the same card read off the same corner.
+      var key = String(row[0]).toLowerCase();
+      SET.by[key] = row;
+      var bare = key.replace(/^0+(?=.)/, '');
+      if (!(bare in SET.by)) SET.by[bare] = row;
+    }
+    say('');
+    return SET;
+  }).catch(function (error) {
+    SET = null;
+    say(String(error.message));
+    return null;
+  });
+}
+
+function show(row) {
+  out.textContent = '';
+  if (!row) return;
+  var card = document.createElement('div');
+  card.className = 'card';
+
+  var top = document.createElement('div');
+  top.className = 'top';
+  if (row[4]) {
+    var img = document.createElement('img');
+    img.src = row[4];
+    img.alt = row[1];
+    img.loading = 'lazy';
+    top.appendChild(img);
+  }
+  var who = document.createElement('div');
+  who.className = 'who';
+  var nm = document.createElement('div');
+  nm.className = 'nm';
+  nm.textContent = row[1];
+  who.appendChild(nm);
+  var meta = document.createElement('div');
+  meta.className = 'meta';
+  function tag(text) {
+    if (!text) return;
+    var t = document.createElement('span');
+    t.className = 'tag';
+    t.textContent = text;
+    meta.appendChild(t);
+  }
+  tag(SET.code + ' ' + row[0]);
+  tag(row[3]);
+  tag(row[2]);
+  who.appendChild(meta);
+  top.appendChild(who);
+  card.appendChild(top);
+
+  var prices = document.createElement('div');
+  prices.className = 'prices';
+  var finishes = Object.keys(row[5] || {});
+  if (!finishes.length) {
+    var none = document.createElement('div');
+    none.className = 'pr';
+    none.innerHTML = '<div class="fin">Price</div><div class="none">none downloaded</div>';
+    prices.appendChild(none);
+  }
+  for (var i = 0; i < finishes.length; i++) {
+    var finish = finishes[i];
+    var pair = row[5][finish];
+    var low = money(pair[0]), market = money(pair[1]);
+    var box = document.createElement('div');
+    box.className = 'pr';
+    var head = document.createElement('div');
+    head.className = 'fin';
+    head.textContent = finish;
+    box.appendChild(head);
+    var big = document.createElement('div');
+    // Low is what the owner's own sale sheets quote, so it leads where there is one.
+    big.className = low || market ? 'big' : 'none';
+    big.textContent = low || market || 'no price';
+    box.appendChild(big);
+    if (low && market) {
+      var alt = document.createElement('div');
+      alt.className = 'alt';
+      alt.textContent = 'market ' + market;
+      box.appendChild(alt);
+    }
+    prices.appendChild(box);
+  }
+  card.appendChild(prices);
+  out.appendChild(card);
+}
+
+function remember(code, row) {
+  var pair = row[5] || {};
+  var first = Object.keys(pair)[0];
+  var value = first ? (money(pair[first][0]) || money(pair[first][1])) : null;
+  recent.unshift({ code: code, no: row[0], name: row[1], value: value });
+  recent = recent.slice(0, 12);
+  var box = document.getElementById('recent');
+  box.textContent = '';
+  for (var i = 0; i < recent.length; i++) {
+    (function (r) {
+      var line = document.createElement('div');
+      line.className = 'rrow';
+      var no = document.createElement('span');
+      no.className = 'no';
+      no.textContent = r.code + ' ' + r.no;
+      var nm = document.createElement('span');
+      nm.textContent = r.name;
+      var val = document.createElement('span');
+      val.className = 'val';
+      val.textContent = r.value || '—';
+      line.appendChild(no); line.appendChild(nm); line.appendChild(val);
+      line.onclick = function () {
+        setbox.value = r.code; nobox.value = r.no; look();
+      };
+      box.appendChild(line);
+    })(recent[i]);
+  }
+  document.getElementById('recentBox').hidden = recent.length === 0;
+}
+
+function look() {
+  var number = nobox.value.trim().toLowerCase();
+  if (!number) { out.textContent = ''; return; }
+  pick(setbox.value).then(function (set) {
+    if (!set) { out.textContent = ''; return; }
+    var row = set.by[number] || set.by[number.replace(/^0+(?=.)/, '')];
+    if (!row) {
+      out.textContent = '';
+      say('No card ' + number + ' in ' + set.code + '.');
+      return;
+    }
+    say('');
+    show(row);
+    remember(set.code, row);
+  });
+}
+
+setbox.addEventListener('input', paintHits);
+setbox.addEventListener('change', function () { pick(setbox.value).then(function () { if (nobox.value) look(); }); });
+setbox.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); nobox.focus(); } });
+nobox.addEventListener('input', look);
+nobox.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); nobox.blur(); } });
+
+loadIndex().then(function () {
+  // Straight back to where you were: a venue is one set at a time.
+  try {
+    var last = localStorage.getItem('grimoire.lookup.set');
+    if (last) { setbox.value = last; pick(last); }
+  } catch (e) { /* a browser with no storage still works */ }
+  setbox.focus();
+});
+setbox.addEventListener('change', function () {
+  try { localStorage.setItem('grimoire.lookup.set', setbox.value.trim().toUpperCase()); } catch (e) {}
+});
+</script>
+</body></html>
